@@ -14,6 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# NICOLAS
+import elasticapm
+from grpc_interceptor import ServerInterceptor
+from grpc_interceptor.exceptions import GrpcException
+from typing import Callable, Any
+########
 from concurrent import futures
 import argparse
 import os
@@ -38,6 +44,35 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 
 import googlecloudprofiler
 
+### NICOLAS
+class ExceptionToStatusInterceptor(ServerInterceptor):
+    def __init__(self):
+        self.apm_client = elasticapm.Client(
+                service_name=os.getenv("APM_SERVICE_NAME"),  # Add your service name here
+                server_url=os.getenv("APM_SERVER_URL"),
+                secret_token=os.getenv("APM_SECRET_TOKEN"),
+                environment=os.getenv("APM_ENVIRONMENT")
+        )
+
+# This class, derived from GrpcInterceptor, handles incoming requests, catches errors, and reports them to Elastic APM.
+    def intercept(
+                self,
+                method: Callable,
+                request: Any,
+                context: grpc.ServicerContext,
+                method_name: str,
+    ) -> Any:
+        try:
+        # Call the function and process the request
+            return method(request, context)
+        except (GrpcException, Exception, grpc.RpcError):
+        # When an error is caught, send error information to Elastic APM
+            self.apm_client.capture_exception()
+        # Re-raise the error
+            raise
+
+######
+
 from logger import getJSONLogger
 logger = getJSONLogger('emailservice-server')
 
@@ -52,7 +87,7 @@ class BaseEmailService(demo_pb2_grpc.EmailServiceServicer):
   def Check(self, request, context):
     return health_pb2.HealthCheckResponse(
       status=health_pb2.HealthCheckResponse.SERVING)
-  
+
   def Watch(self, request, context):
     return health_pb2.HealthCheckResponse(
       status=health_pb2.HealthCheckResponse.UNIMPLEMENTED)
@@ -115,7 +150,11 @@ class HealthCheck():
       status=health_pb2.HealthCheckResponse.SERVING)
 
 def start(dummy_mode):
-  server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),)
+  interceptors = [ExceptionToStatusInterceptor()]
+  server = grpc.server(
+    futures.ThreadPoolExecutor(max_workers=10),
+    interceptors=interceptors,
+  )
   service = None
   if dummy_mode:
     service = DummyEmailService()
@@ -193,6 +232,6 @@ if __name__ == '__main__':
   except (KeyError, DefaultCredentialsError):
       logger.info("Tracing disabled.")
   except Exception as e:
-      logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
-  
+      logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.")
+
   start(dummy_mode = True)
